@@ -1,10 +1,25 @@
-# Validação da continuação — 2026-10-24
+# Validação — implementação local e produção — 2026-10-24
+
+## Publicação real na VPS
+
+- Repositório existente: https://github.com/samuelhk0595/webhook-relay, branch `main`.
+- Primeira pipeline completa: **success**, incluindo verificação Linux, build Docker, smoke da imagem, deploy SSH e HTTPS: https://github.com/samuelhk0595/webhook-relay/actions/runs/40131485440.
+- Produção: **https://hooks.codemob.com.br/admin/**; `/readyz` retorna **204**, com certificado TLS válido.
+- DNS `hooks` criado na zona autorizada `codemob.com.br`, apontando para a VPS em modo DNS-only.
+- Integração ao Traefik/rede `edge` já existentes, com arquivo de rota próprio. Os containers das lojas e do proxy permaneceram ativos, sem reinício.
+- Compose de produção sem portas extras, aplicação UID 10001, volume SQLite `webhook-relay-data`. Leitura do secret pelo usuário não-root foi verificada.
+- Smoke real por HTTPS com um evento binário/HMAC, dois receptores internos, uma falha seguida de retry e replay idempotente: **1 recebido, 3 ciclos concluídos, 1 tentativa com falha, 4 tentativas conhecidas**. Destino A não repetiu devido à falha de B. Downloads preservaram bytes; namespace/destinos de teste foram arquivados ao terminar.
+- Playwright contra produção em 390×844: login real, dashboard, sessão Secure/HttpOnly/SameSite=Strict, sem overflow horizontal e sem erros JavaScript.
+- `actionlint` aprovou o workflow; `bash -n` aprovou o script de release; Compose standalone e produção tiveram configuração validada.
+- Chave SSH exclusiva em GitHub Actions Secrets; senha de bootstrap apenas no host. `.klm/`, `.impeccable/`, bancos, arquivos de acesso e secrets não foram enviados ao Git.
+
+As verificações abaixo registram a etapa local anterior à publicação; a indisponibilidade do daemon Docker do Windows foi superada pelo build/smoke no GitHub Actions e pela execução real na VPS.
 
 ## Entregue
 
 Frontend do graph reaproveitado. Backend Rust/Axum real, SQLite WAL/FULL e migrations, bootstrap Argon2id, sessões/CSRF, tokens revogáveis em hash, namespaces/destinos, ingresso binário, fan-out transacional, worker com limites/retries/recuperação, replay idempotente, métricas, retenção, OpenAPI e tipos TypeScript derivados. Rust serve o build em `/admin/`; Node não é runtime de produção.
 
-Arquivos de operação: Dockerfile multi-stage, Compose/Caddy, `.env.example`, CLI `backup` via `VACUUM INTO`, CLI `reset-password`, README com início local, curl, deploy, atualização, backup/restauração e diagnóstico. `.klm/` e o plano aprovado foram preservados. Sem commit, push ou deploy em VPS; não existe repositório Git inicial neste diretório.
+Arquivos de operação: Dockerfile multi-stage, Compose/Caddy standalone e Compose/Traefik de produção, `.env.example`, CLI `backup` via `VACUUM INTO`, CLI `reset-password`, README com início local, curl, CI/CD, atualização, backup/restauração e diagnóstico. `.klm/` e o plano aprovado foram preservados. O diretório inicialmente não possuía Git; agora está versionado no repositório solicitado, sem segredos/metadados locais.
 
 ## Ambiente e comandos
 
@@ -48,9 +63,9 @@ Os primeiros checks detectaram lint de Node nos scripts e um guard de Mutex mant
 
 ## Limites reais e operação restante
 
-- **Build da imagem, execução de containers, Caddy e emissão/renovação HTTPS não foram testados**: somente a validação declarativa Compose foi possível sem daemon. Executar o smoke em host com Docker antes de expor a VPS.
-- Nenhum deploy real, teste de carga prolongado, perda elétrica de disco ou validação em dispositivo móvel físico foi realizado. A garantia transacional exercitada usa SQLite local e queda abrupta de processo; durabilidade física também depende do armazenamento da VPS.
+- Build da imagem, execução em containers e HTTPS com Traefik foram validados na publicação acima. O modo standalone/Caddy e a renovação futura dos certificados não foram exercitados.
+- Não houve teste de carga prolongado, perda elétrica de disco ou validação em dispositivo móvel físico. A garantia transacional exercitada usa SQLite e queda abrupta de processo; durabilidade física também depende do armazenamento da VPS.
 - Retenção limpa bytes/headers/diagnósticos, mantendo tombstones de eventos/ciclos, métricas e idempotência. Esses metadados e filas ilimitadas podem crescer. Diagnósticos de tentativas antigas ficam indisponíveis após o prazo; a UI explica isso em vez de dizer que nunca houve tentativa.
 - Sem exactly-once/ordem estrita; assinaturas dependentes de URL/tempo e desafios síncronos de inscrição exigem adaptação fora desta versão. O contrato e README explicitam essas propriedades.
 
-Não há backend ou integração principal pendente de implementação. O passo operacional ainda não validado é o empacotamento em containers/HTTPS no host de destino, além de configurar domínio, senha privada e caminho de rede até o computador doméstico.
+Não há backend, integração principal ou primeiro deploy pendente. Domínio, senha privada e execução em container estão configurados. O operador ainda precisa cadastrar seus namespaces/destinos reais e fornecer um caminho de rede até o computador doméstico quando ele estiver ligado.
