@@ -1,0 +1,45 @@
+# Production on the existing VPS: reuse Traefik's `edge` network, publish no host ports.
+name: webhook-relay
+services:
+  app:
+    image: webhook-relay:${IMAGE_TAG:?Set IMAGE_TAG to the deployed commit SHA}
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${DOMAIN:?Set DOMAIN in the server .env}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
+      BOOTSTRAP_PASSWORD_FILE: /run/secrets/bootstrap_password
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
+      MAX_HEADER_BYTES: ${MAX_HEADER_BYTES:-65536}
+      INGRESS_CONCURRENCY: ${INGRESS_CONCURRENCY:-64}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-16}
+      DESTINATION_CONCURRENCY: ${DESTINATION_CONCURRENCY:-2}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+      FAILED_RETENTION_DAYS: ${FAILED_RETENTION_DAYS:-30}
+    secrets:
+      - bootstrap_password
+    volumes:
+      - relay_data:/data
+    networks:
+      edge:
+        aliases:
+          - webhook-relay-app
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    stop_grace_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+secrets:
+  bootstrap_password:
+    file: ./secrets/bootstrap_password.txt
+volumes:
+  relay_data:
+    name: webhook-relay-data
+networks:
+  edge:
+    external: true
+    name: ${PROXY_NETWORK:-edge}

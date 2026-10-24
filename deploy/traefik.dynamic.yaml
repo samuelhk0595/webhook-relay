@@ -1,0 +1,17 @@
+# Install as a NEW file in the existing Traefik file-provider directory.
+# Do not replace the shared routers.yml used by other applications.
+http:
+  routers:
+    webhook-relay:
+      rule: "Host(`hooks.codemob.com.br`)"
+      entryPoints:
+        - websecure
+      service: webhook-relay
+      tls:
+        certResolver: letsencrypt
+  services:
+    webhook-relay:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://webhook-relay-app:8080"

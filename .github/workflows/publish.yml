@@ -1,0 +1,122 @@
+name: Verify and publish
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Rust checks and integration tests
+        working-directory: backend
+        run: |
+          cargo fmt --check
+          cargo check --locked
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+          cargo build --locked
+      - name: Frontend and generated API contract
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run api:check
+          npm run typecheck
+          npm run lint
+          npm run build
+      - name: Browser tests, including real backend/SQLite/HTTP delivery
+        working-directory: frontend
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+          npm run test:integration
+
+  publish:
+    needs: verify
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: webhook-relay-production
+      cancel-in-progress: false
+    env:
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER }}
+      VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+      VPS_HOST_KEY: ${{ vars.VPS_HOST_KEY }}
+      DEPLOY_ROOT: /opt/webhook-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: webhook-relay:${{ github.sha }}
+          build-args: VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test actual image
+        run: |
+          docker run -d --name relay-smoke -p 127.0.0.1:18080:8080 \
+            -e PUBLIC_URL=http://127.0.0.1:18080 -e COOKIE_SECURE=false \
+            -e BOOTSTRAP_USERNAME=smoke -e BOOTSTRAP_PASSWORD="$(openssl rand -hex 24)" \
+            webhook-relay:${GITHUB_SHA}
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/readyz; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/readyz
+          curl --fail --silent http://127.0.0.1:18080/admin/ | grep -q '<div id="root">'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/v1/openapi.json)" = 401
+          docker rm -f -v relay-smoke
+      - name: Pin SSH identity and server host key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_HOST_KEY" && test -n "$DEPLOY_SSH_KEY"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/relay_deploy
+          chmod 600 ~/.ssh/relay_deploy
+          printf '%s\n' "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+      - name: Transfer immutable image and deployment bundle
+        run: |
+          docker save webhook-relay:${GITHUB_SHA} | gzip -1 > image.tar.gz
+          sha256sum image.tar.gz > image.tar.gz.sha256
+          ssh -i ~/.ssh/relay_deploy -p "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "mkdir -p '$DEPLOY_ROOT/incoming/$GITHUB_SHA'"
+          scp -i ~/.ssh/relay_deploy -P "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            image.tar.gz image.tar.gz.sha256 deploy/compose.production.yaml deploy/release.sh \
+            "$VPS_USER@$VPS_HOST:$DEPLOY_ROOT/incoming/$GITHUB_SHA/"
+      - name: Back up SQLite and deploy on VPS
+        run: |
+          ssh -i ~/.ssh/relay_deploy -p "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "bash '$DEPLOY_ROOT/incoming/$GITHUB_SHA/release.sh' '$GITHUB_SHA'"
+      - name: Verify public HTTPS
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors https://hooks.codemob.com.br/readyz
+          printf 'Published commit `%s` to https://hooks.codemob.com.br/admin/\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove local SSH key
+        if: always()
+        run: rm -f ~/.ssh/relay_deploy

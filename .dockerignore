@@ -1,0 +1,15 @@
+.klm
+.impeccable
+.git
+**/node_modules
+**/target
+**/dist
+**/test-results
+**/playwright-report
+**/*.db*
+**/*.lock-writer
+**/*.log
+.env
+.env.*
+deploy/secrets
+data
